@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
-from api.views import RegisterView, LoginView, SearchView, SpamView, ContactsListView, ContactDetailView
+from api.views import RegisterView, LoginView, SearchView, SpamView, ContactsListView, ContactDetailView, LogoutView
 
 urlpatterns = [
     path('', ContactsListView.as_view(), name='home'),
@@ -26,7 +26,8 @@ urlpatterns = [
     path('search/', SearchView.as_view(), name='search'),
     path('spam/', SpamView.as_view(), name='spam'),
     path('contacts/', ContactsListView.as_view(), name='contacts_list'),
-    path('contact/<int:contact_id>/', ContactDetailView.as_view(), name='contact_detail')
+    path('contact/<int:contact_id>/', ContactDetailView.as_view(), name='contact_detail'),
+    path('logout/', LogoutView.as_view(), name='logout'),
 
 ]
 

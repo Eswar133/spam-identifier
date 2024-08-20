@@ -1,23 +1,27 @@
-import traceback
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from django.contrib.auth.models import User
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login
-from django.shortcuts import get_object_or_404
+from django.views import View
 from django.core.paginator import Paginator
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.contrib.auth.models import User
+from django.contrib.auth import logout
 from .models import Contact, Spam
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-#THRESHOLD to determine spam likelihood 
+import traceback
+
 SPAM__THRESHOLD = 20
 
 @method_decorator(csrf_exempt, name='dispatch')
-class RegisterView(APIView):
-    
+class RegisterView(View):
+    def get(self, request):
+        return render(request, 'register.html')
+
     def post(self, request):
         try:
-            data = request.data
+            data = request.POST
             username = data.get('username')
             password = data.get('password')
             name = data.get('name')
@@ -25,10 +29,10 @@ class RegisterView(APIView):
             email = data.get('email', None)
 
             if User.objects.filter(username=username).exists():
-                return Response({'error': 'Username already exists'}, status=400)
+                return render(request, 'register.html', {'error': 'Username already exists'})
 
             if Contact.objects.filter(phone_number=phone_number, is_registered=True).exists():
-                return Response({'error': 'Phone number already registered'}, status=400)
+                return render(request, 'register.html', {'error': 'Phone number already registered'})
 
             user = User.objects.create_user(username=username, password=password, first_name=name)
             Contact.objects.create(
@@ -36,127 +40,105 @@ class RegisterView(APIView):
                 name=name,
                 phone_number=phone_number,
                 email=email,
-                is_registered=True  # Set to True for registered users
+                is_registered=True
             )
-
-            return Response({'message': 'User registered successfully'}, status=201)
+            return redirect('login')
         except Exception as e:
-            print (traceback.print_exc(),flush=True)
-            return Response({'message': 'User registeration failed:'+str(e)}, status=400)
-            
+            print(traceback.print_exc(), flush=True)
+            return render(request, 'register.html', {'error': f'User registration failed: {str(e)}'})
 
-class LoginView(APIView):
-    permission_classes = []    
+
+class LoginView(View):
+    def get(self, request):
+        return render(request, 'login.html')
 
     def post(self, request):
-        data = request.data
+        data = request.POST
         username = data.get('username')
         password = data.get('password')
-        
 
         user = authenticate(request, username=username, password=password)
         if user is not None:
             login(request, user)
-            return Response({'message': 'Login successful'})
+            return redirect('home')
         else:
-            return Response({'error': 'Invalid credentials'}, status=400)
+            return render(request, 'login.html', {'error': 'Invalid credentials'})
 
-class SearchView(APIView):
-    permission_classes = [IsAuthenticated]
 
+class SearchView(View):
     def get(self, request):
         query = request.GET.get('query', '')
         phone_number = request.GET.get('phone_number', '')
         page_number = request.GET.get('page', 1)
-        results = {"exact-matches": [], "relevant-matches":[]}
-        exact_contacts = []
-        relevant_contacts = []
+        results = {"exact_matches": [], "relevant_matches": []}
+        exact_contacts = Contact.objects.none()
+        relevant_contacts = Contact.objects.none()
+
         if query:
             exact_contacts = Contact.objects.filter(name__startswith=query)
             relevant_contacts = Contact.objects.filter(name__icontains=query).exclude(id__in=exact_contacts)
         elif phone_number:
-            exact_contacts = Contact.objects.filter(phone_number=phone_number, is_registered = True)
+            exact_contacts = Contact.objects.filter(phone_number=phone_number, is_registered=True)
             if not exact_contacts.exists():
                 exact_contacts = Contact.objects.filter(phone_number=phone_number)
 
         paginator_exact_contacts = Paginator(exact_contacts, 10)
-        paginator_relevant_contacts = Paginator(relevant_contacts, 10)
-        
         page_obj_exact_contacts = paginator_exact_contacts.get_page(page_number)
-        page_obj_relevant_contacts = paginator_relevant_contacts.get_page(1)
-        
+
         for contact in page_obj_exact_contacts:
             spam_records = Spam.objects.filter(phone_number=contact.phone_number)
-            email = None
-            if contact.user == request.user or request.user in contact.user.contacts.values_list('user', flat=True):
-                email = contact.email
-            #compute percentage of spam likelihood using THRESHOLD
-            spam_likelihood = max(SPAM__THRESHOLD, spam_records.count())*100/SPAM__THRESHOLD 
-            results["exact-matches"].append({
+            spam_likelihood = max(SPAM__THRESHOLD, spam_records.count()) * 100 / SPAM__THRESHOLD
+            results["exact_matches"].append({
                 'user_id': str(contact.id),
                 'name': contact.name,
                 'phone_number': contact.phone_number,
-                'spam_likelihood':str(int(spam_likelihood))+ "%"   
+                'spam_likelihood': str(int(spam_likelihood)) + "%"   
             })
 
-        
-        for contact in page_obj_relevant_contacts:
-            spam_records = Spam.objects.filter(phone_number=contact.phone_number)
-            email = None
-            if contact.user == request.user or request.user in contact.user.contacts.values_list('user', flat=True):
-                email = contact.email
-            #compute percentage of spam likelihood using THRESHOLD
-            spam_likelihood = max(SPAM__THRESHOLD, spam_records.count())*100/SPAM__THRESHOLD 
-            results["relevant-matches"].append({
-                'user_id': str(contact.id),
-                'name': contact.name,
-                'phone_number': contact.phone_number,
-                'spam_likelihood':str(int(spam_likelihood))+ "%"   
-            })
-            
-        return Response({
+        return render(request, 'search.html', {
             'count': exact_contacts.count(),
             'results': results,
             'page': page_number,
-            'total_pages': paginator_exact_contacts.num_pages
+            'total_pages': paginator_exact_contacts.num_pages,
+            'page_range': paginator_exact_contacts.page_range  # Add this line
         })
 
-class SpamView(APIView):
-    permission_classes = [IsAuthenticated]
-    def get(self, request):
-        page_number = int(request.GET.get("page",1))
 
+class SpamView(View):
+    def get(self, request):
+        page_number = int(request.GET.get("page", 1))
         spam_records = Spam.objects.all()
 
         results = []
         paginator = Paginator(spam_records, 50)
         current_spam_records = paginator.get_page(page_number)
         for spam in current_spam_records:
-            marked_by = [ user.username for user in spam.marked_by_users.all() ]
+            marked_by = [user.username for user in spam.marked_by_users.all()]
             results.append({
                 'phone_number': spam.phone_number,
-                'marked_by': {"count": len(marked_by), "users": marked_by }
+                'marked_by': {"count": len(marked_by), "users": marked_by}
             })
+
         response = {
             'count': spam_records.count(),
             'results': results,
             'page': page_number
-            } 
-        return Response(response,status=200)
+        }
+        return render(request, 'spam.html', response)
 
     def post(self, request):
-        data = request.data
+        data = request.POST
         phone_number = data.get('phone_number')
 
         spam, created = Spam.objects.get_or_create(phone_number=phone_number)
         spam.marked_by_users.add(request.user)
 
-        return Response({'message': 'Number marked as spam successfully'})
+        return redirect('contacts_list')
 
-class ContactsListView(APIView):
-    permission_classes = [IsAuthenticated]
+
+class ContactsListView(View):
     def get(self, request):
-        page_number = int(request.GET.get("page_number",1))
+        page_number = int(request.GET.get("page_number", 1))
         contacts_list = Contact.objects.filter().order_by('name').distinct()
         results = []
 
@@ -172,15 +154,18 @@ class ContactsListView(APIView):
                 'spam_likelihood': spam_likelihood
             })
 
-        response = { "page":page_number,
-                    "count": contacts_list.count(),
-                    "total-pages": paginator.num_pages,
-                    "contacts": results }
+        page_range = paginator.page_range
+        response = {
+            "page": page_number,
+            "count": contacts_list.count(),
+            "total_pages": paginator.num_pages,
+            "contacts": results,
+            "page_range": page_range,
+        }
+        return render(request, 'contacts.html', response)
 
-        return Response(response,status=200)
 
-class ContactDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+class ContactDetailView(View):
     def get(self, request, contact_id):
         contact = get_object_or_404(Contact, id=contact_id)
         spam_likelihood = Spam.objects.filter(phone_number=contact.phone_number).exists()
@@ -189,11 +174,16 @@ class ContactDetailView(APIView):
             'user_id': contact.user.id,
             'name': contact.name,
             'phone_number': contact.phone_number,
-            'email':"",
+            'email': "",
             'spam_likelihood': spam_likelihood
         }
         current_user = request.user
         if contact.is_registered and contact.user == current_user:
             contact_info['email'] = contact.email
-            
-        return Response(contact_info)
+
+        return render(request, 'contact_detail.html', contact_info)
+
+class LogoutView(View):
+    def get(self, request):
+        logout(request)
+        return redirect('login')
